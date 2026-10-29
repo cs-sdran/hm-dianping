@@ -1,0 +1,105 @@
+{
+  "status": "RECOVERY_GAP_REPRODUCED",
+  "experiment_checks_passed": true,
+  "recovery_implemented": false,
+  "database": "hmdp_async_failure_20261019_093210_08a870",
+  "voucher_id": 1,
+  "cases": [
+    {
+      "name": "HTTP creation initializes Redis after database save",
+      "voucher_id": 1,
+      "initial_stock": 3,
+      "remaining_stock": 3,
+      "orders": 0,
+      "duplicate_groups": 0,
+      "status": "PASS",
+      "redis_stock": 3,
+      "redis_recorded_users": 0,
+      "server": 1
+    },
+    {
+      "name": "accepted task fails; MySQL rolls back but Redis stays reserved",
+      "status": "OBSERVED",
+      "voucher_id": 1,
+      "user_id": 1,
+      "accepted_response": {
+        "success": true,
+        "data": "1430868354662401"
+      },
+      "injected_failure_marker": "async_verification_insert_rejected",
+      "consumer_log": "app-1.log",
+      "consumer_log_line": 47,
+      "state": {
+        "mysql_stock": 3,
+        "mysql_orders": 0,
+        "failed_user_orders": 0,
+        "redis_stock": 2,
+        "redis_recorded_users": 1,
+        "failed_user_recorded": true
+      }
+    },
+    {
+      "name": "after removing the fault, another JVM still rejects the same user",
+      "status": "OBSERVED",
+      "response": {
+        "success": false,
+        "errorMsg": "买过了"
+      },
+      "state": {
+        "mysql_stock": 3,
+        "mysql_orders": 0,
+        "failed_user_orders": 0,
+        "redis_stock": 2,
+        "redis_recorded_users": 1,
+        "failed_user_recorded": true
+      }
+    },
+    {
+      "name": "same consumer handles a healthy task but the failed user remains stuck",
+      "status": "OBSERVED",
+      "healthy_user_id": 2,
+      "healthy_order_id": "1430872649629699",
+      "state": {
+        "mysql_stock": 2,
+        "mysql_orders": 1,
+        "failed_user_orders": 0,
+        "redis_stock": 1,
+        "redis_recorded_users": 2,
+        "failed_user_recorded": true
+      }
+    }
+  ],
+  "final_state": {
+    "mysql_stock": 2,
+    "mysql_orders": 1,
+    "failed_user_orders": 0,
+    "redis_stock": 1,
+    "redis_recorded_users": 2,
+    "failed_user_recorded": true
+  },
+  "development_before": {
+    "vouchers": 2,
+    "seckill_vouchers": 1,
+    "total_stock": 100,
+    "orders": 0,
+    "users": 1012
+  },
+  "development_after": {
+    "vouchers": 2,
+    "seckill_vouchers": 1,
+    "total_stock": 100,
+    "orders": 0,
+    "users": 1012
+  },
+  "app_pids": [
+    19672,
+    21572
+  ],
+  "app_ports": [
+    56323,
+    56324
+  ],
+  "redis_port": 56023,
+  "injection_trigger_removed": true,
+  "conclusion": "Consumer only logs failures; Redis reservation remains and the failed user cannot retry."
+}

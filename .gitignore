@@ -31,3 +31,15 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### Local application configuration ###
+src/main/resources/application.yaml
+src/main/resources/application.yml
+src/main/resources/application-local*.yaml
+src/main/resources/application-local*.yml
+.env
+.env.*
+!.env.example
+*.log
+__pycache__/
+*.py[cod]

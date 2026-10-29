@@ -1,0 +1,131 @@
+{
+  "status": "PASS",
+  "database": "hmdp_seckill_verify_20261016_193337_5f6b38",
+  "app_pids": [
+    2684,
+    13072
+  ],
+  "app_ports": [
+    56769,
+    56770
+  ],
+  "mysql_version": "8.0.45",
+  "development_orders_before": 0,
+  "development_orders_after": 0,
+  "total_orders": 15,
+  "unique_order_ids": 15,
+  "cases": [
+    {
+      "name": "future",
+      "voucher_id": 1,
+      "initial_stock": 5,
+      "remaining_stock": 5,
+      "orders": 0,
+      "duplicate_groups": 0,
+      "status": "PASS"
+    },
+    {
+      "name": "ended",
+      "voucher_id": 2,
+      "initial_stock": 5,
+      "remaining_stock": 5,
+      "orders": 0,
+      "duplicate_groups": 0,
+      "status": "PASS"
+    },
+    {
+      "name": "zero stock",
+      "voucher_id": 3,
+      "initial_stock": 0,
+      "remaining_stock": 0,
+      "orders": 0,
+      "duplicate_groups": 0,
+      "status": "PASS"
+    },
+    {
+      "name": "unauthenticated request",
+      "voucher_id": 4,
+      "initial_stock": 5,
+      "remaining_stock": 5,
+      "orders": 0,
+      "duplicate_groups": 0,
+      "status": "PASS"
+    },
+    {
+      "name": "sequential duplicate across JVMs",
+      "voucher_id": 5,
+      "initial_stock": 5,
+      "remaining_stock": 4,
+      "orders": 1,
+      "duplicate_groups": 0,
+      "status": "PASS"
+    },
+    {
+      "name": "another user can buy",
+      "voucher_id": 5,
+      "initial_stock": 5,
+      "remaining_stock": 3,
+      "orders": 2,
+      "duplicate_groups": 0,
+      "status": "PASS"
+    },
+    {
+      "name": "database rejects duplicate user/voucher",
+      "voucher_id": 5,
+      "initial_stock": 5,
+      "remaining_stock": 3,
+      "orders": 2,
+      "duplicate_groups": 0,
+      "status": "PASS"
+    },
+    {
+      "name": "50 same-user requests across two JVMs",
+      "voucher_id": 6,
+      "initial_stock": 5,
+      "remaining_stock": 4,
+      "orders": 1,
+      "duplicate_groups": 0,
+      "status": "PASS",
+      "requests": 50,
+      "accepted": 1
+    },
+    {
+      "name": "50 users compete for 10 vouchers across two JVMs",
+      "voucher_id": 7,
+      "initial_stock": 10,
+      "remaining_stock": 0,
+      "orders": 10,
+      "duplicate_groups": 0,
+      "status": "PASS",
+      "requests": 50,
+      "accepted": 10
+    },
+    {
+      "name": "JVM B is rejected while JVM A holds Redis lock",
+      "voucher_id": 8,
+      "initial_stock": 5,
+      "remaining_stock": 4,
+      "orders": 1,
+      "duplicate_groups": 0,
+      "status": "PASS"
+    },
+    {
+      "name": "insert failure rolls back inventory",
+      "voucher_id": 9,
+      "initial_stock": 5,
+      "remaining_stock": 5,
+      "orders": 0,
+      "duplicate_groups": 0,
+      "status": "PASS"
+    },
+    {
+      "name": "failed request releases lock; retry on other JVM succeeds",
+      "voucher_id": 9,
+      "initial_stock": 5,
+      "remaining_stock": 4,
+      "orders": 1,
+      "duplicate_groups": 0,
+      "status": "PASS"
+    }
+  ]
+}

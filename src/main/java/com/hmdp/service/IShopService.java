@@ -14,9 +14,15 @@ import com.baomidou.mybatisplus.extension.service.IService;
  */
 public interface IShopService extends IService<Shop> {
 
-    Result queryById(Long id);
+    Shop getById (Long id);
 
-    Result update(Shop shop);
+    Result updateShop(Shop shop);
 
+    Result saveShop(Shop shop);
 
+    Result queryShopByType(Integer typeId, Integer current, Double x, Double y);
+
+    boolean trylock(String Key,String token);
+
+    void unlock(String Key, String token);
 }

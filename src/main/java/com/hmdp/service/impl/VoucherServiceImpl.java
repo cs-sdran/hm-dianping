@@ -9,6 +9,8 @@ import com.hmdp.service.ISeckillVoucherService;
 import com.hmdp.service.IVoucherService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import javax.annotation.Resource;
 import java.util.List;
@@ -35,17 +37,41 @@ public class VoucherServiceImpl extends ServiceImpl<VoucherMapper, Voucher> impl
         return Result.ok(vouchers);
     }
 
+    @Resource
+    private SeckillQualificationService seckillQualificationService;
+
     @Override
     @Transactional
     public void addSeckillVoucher(Voucher voucher) {
+        // 在写库之前校验，不能等事务提交后初始化 Redis 时才发现非法库存。
+        if (voucher.getStock() == null || voucher.getStock() < 0) {
+            throw new IllegalArgumentException("库存不能为空或负数");
+        }
         // 保存优惠券
-        save(voucher);
+        if (!save(voucher)) {
+            throw new IllegalStateException("保存优惠券失败");
+        }
         // 保存秒杀信息
         SeckillVoucher seckillVoucher = new SeckillVoucher();
         seckillVoucher.setVoucherId(voucher.getId());
         seckillVoucher.setStock(voucher.getStock());
         seckillVoucher.setBeginTime(voucher.getBeginTime());
         seckillVoucher.setEndTime(voucher.getEndTime());
-        seckillVoucherService.save(seckillVoucher);
+        if (!seckillVoucherService.save(seckillVoucher)) {
+            throw new IllegalStateException("保存秒杀信息失败");
+        }
+
+        long voucherId = voucher.getId();
+        int stock = voucher.getStock();
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                // 此时数据库已提交；初始化失败必须报错，但不能回滚已提交的数据。
+                boolean initialized = seckillQualificationService.initializeStock(voucherId, stock);
+                if (!initialized) {
+                    throw new IllegalStateException("库存初始化未完成");
+                }
+            }
+        });
     }
 }

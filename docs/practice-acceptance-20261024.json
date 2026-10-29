@@ -1,0 +1,74 @@
+{
+  "status": "PASS",
+  "database": "hmdp_practice_verify_20261024_123925_46e2e8",
+  "app_port": 57245,
+  "development_counts_before": {
+    "tb_user": 1012,
+    "tb_user_info": 0,
+    "tb_follow": 0,
+    "tb_blog": 4,
+    "tb_shop": 14,
+    "tb_shop_type": 10,
+    "tb_voucher": 2,
+    "tb_seckill_voucher": 1,
+    "tb_voucher_order": 0
+  },
+  "development_counts_after": {
+    "tb_user": 1012,
+    "tb_user_info": 0,
+    "tb_follow": 0,
+    "tb_blog": 4,
+    "tb_shop": 14,
+    "tb_shop_type": 10,
+    "tb_voucher": 2,
+    "tb_seckill_voucher": 1,
+    "tb_voucher_order": 0
+  },
+  "cases": [
+    {
+      "name": "Feed and sign-in reject unauthenticated requests",
+      "status": "PASS"
+    },
+    {
+      "name": "SMS code login and token authentication for three independent users",
+      "status": "PASS"
+    },
+    {
+      "name": "Follow, duplicate follow and common follows use consistent SQL and Redis data",
+      "status": "PASS"
+    },
+    {
+      "name": "Publishing uses authenticated author and fans receive all seven posts",
+      "status": "PASS"
+    },
+    {
+      "name": "Feed HTTP cursor pagination has no duplicates or omissions across equal timestamps",
+      "status": "PASS",
+      "pages": 5
+    },
+    {
+      "name": "Like, unlike, liker list and feed viewer state agree with persisted counts",
+      "status": "PASS"
+    },
+    {
+      "name": "Unfollow stops delivery of future posts while other fans still receive them",
+      "status": "PASS"
+    },
+    {
+      "name": "Sign-in is idempotent and user-isolated; consecutive count requires today",
+      "status": "PASS"
+    },
+    {
+      "name": "Shop detail uses generic cache, update invalidation, negative caching and GEO",
+      "status": "PASS"
+    },
+    {
+      "name": "Logout invalidates authentication token",
+      "status": "PASS"
+    },
+    {
+      "name": "Development table row counts unchanged",
+      "status": "PASS"
+    }
+  ]
+}

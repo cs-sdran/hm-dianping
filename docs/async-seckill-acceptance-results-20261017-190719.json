@@ -1,0 +1,150 @@
+{
+  "status": "PASS",
+  "database": "hmdp_async_verify_20261017_190719_2c2885",
+  "cases": [
+    {
+      "name": "HTTP creation initializes Redis after database save",
+      "voucher_id": 1,
+      "initial_stock": 3,
+      "remaining_stock": 3,
+      "orders": 0,
+      "duplicate_groups": 0,
+      "status": "PASS",
+      "redis_stock": 3,
+      "redis_recorded_users": 0,
+      "server": 1
+    },
+    {
+      "name": "first purchase persists the exact returned order ID",
+      "voucher_id": 1,
+      "initial_stock": 3,
+      "remaining_stock": 2,
+      "orders": 1,
+      "duplicate_groups": 0,
+      "status": "PASS",
+      "redis_stock": 2,
+      "redis_recorded_users": 1,
+      "user_id": 1,
+      "order_id": "836908737363969"
+    },
+    {
+      "name": "same user on another JVM cannot buy again",
+      "voucher_id": 1,
+      "initial_stock": 3,
+      "remaining_stock": 2,
+      "orders": 1,
+      "duplicate_groups": 0,
+      "status": "PASS",
+      "redis_stock": 2,
+      "redis_recorded_users": 1,
+      "response": {
+        "success": false,
+        "errorMsg": "买过了"
+      }
+    },
+    {
+      "name": "other users consume the remaining two units",
+      "voucher_id": 1,
+      "initial_stock": 3,
+      "remaining_stock": 0,
+      "orders": 3,
+      "duplicate_groups": 0,
+      "status": "PASS",
+      "redis_stock": 0,
+      "redis_recorded_users": 3
+    },
+    {
+      "name": "sold-out request does not create an order",
+      "voucher_id": 1,
+      "initial_stock": 3,
+      "remaining_stock": 0,
+      "orders": 3,
+      "duplicate_groups": 0,
+      "status": "PASS",
+      "redis_stock": 0,
+      "redis_recorded_users": 3,
+      "response": {
+        "success": false,
+        "errorMsg": "库存不足"
+      }
+    },
+    {
+      "name": "HTTP creation initializes Redis after database save",
+      "voucher_id": 2,
+      "initial_stock": 5,
+      "remaining_stock": 5,
+      "orders": 0,
+      "duplicate_groups": 0,
+      "status": "PASS",
+      "redis_stock": 5,
+      "redis_recorded_users": 0,
+      "server": 2
+    },
+    {
+      "name": "50 same-user requests across two JVMs create one order",
+      "voucher_id": 2,
+      "initial_stock": 5,
+      "remaining_stock": 4,
+      "orders": 1,
+      "duplicate_groups": 0,
+      "status": "PASS",
+      "redis_stock": 4,
+      "redis_recorded_users": 1,
+      "requests": 50,
+      "accepted": 1
+    },
+    {
+      "name": "HTTP creation initializes Redis after database save",
+      "voucher_id": 3,
+      "initial_stock": 10,
+      "remaining_stock": 10,
+      "orders": 0,
+      "duplicate_groups": 0,
+      "status": "PASS",
+      "redis_stock": 10,
+      "redis_recorded_users": 0,
+      "server": 1
+    },
+    {
+      "name": "50 users across two JVMs cannot oversell ten units",
+      "voucher_id": 3,
+      "initial_stock": 10,
+      "remaining_stock": 0,
+      "orders": 10,
+      "duplicate_groups": 0,
+      "status": "PASS",
+      "redis_stock": 0,
+      "redis_recorded_users": 10,
+      "requests": 50,
+      "accepted": 10
+    }
+  ],
+  "mysql_version": "8.0.45",
+  "redis_version": "3.2.100",
+  "app_pids": [
+    25812,
+    26252
+  ],
+  "app_ports": [
+    64212,
+    64213
+  ],
+  "redis_port": 64025,
+  "development_before": {
+    "vouchers": 2,
+    "seckill_vouchers": 1,
+    "total_stock": 100,
+    "orders": 0,
+    "users": 1012
+  },
+  "development_after": {
+    "vouchers": 2,
+    "seckill_vouchers": 1,
+    "total_stock": 100,
+    "orders": 0,
+    "users": 1012
+  },
+  "total_orders": 14,
+  "unique_order_ids": 14,
+  "scope": "Real coupon-creation HTTP, authentication, Redis Lua, two JVM queues, MySQL orders"
+}

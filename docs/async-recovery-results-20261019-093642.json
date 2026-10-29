@@ -1,0 +1,161 @@
+{
+  "status": "RECOVERY_TESTS_PASSED",
+  "experiment_checks_passed": true,
+  "recovery_implemented": true,
+  "database": "hmdp_async_failure_20261019_093642_6b1f2e",
+  "voucher_id": 1,
+  "manual_review_task": {
+    "orderId": 1432040880734212,
+    "userId": 3,
+    "voucherId": 2,
+    "attempts": 3,
+    "status": "MANUAL_REVIEW",
+    "reason": "org.springframework.jdbc.UncategorizedSQLException: \r\n### Error updating database.  Cause: java.sql.SQLException: async_verification_persistent_reject\r\n### The error may exist in com/hmdp/mapper/VoucherOrderMapper.java (best guess)\r\n### The error may involve com.hmdp.mapper.VoucherOrderMapper.insert-Inline\r\n### The error occurred while setting parameters\r\n### SQL: INSERT INTO tb_voucher_order  ( id, user_id, voucher_id )  VALUES  ( ?, ?, ? )\r\n### Cause: java.sql.SQLException: async_verification_persistent_reject\n; uncategorized SQLException; SQL state [45000]; error code [1644]; async_verification_persistent_reject; nested exception is java.sql.SQLException: async_verification_persistent_reject",
+    "updatedAt": 1792373825785
+  },
+  "cases": [
+    {
+      "name": "HTTP creation initializes Redis after database save",
+      "voucher_id": 1,
+      "initial_stock": 3,
+      "remaining_stock": 3,
+      "orders": 0,
+      "duplicate_groups": 0,
+      "status": "PASS",
+      "redis_stock": 3,
+      "redis_recorded_users": 0,
+      "server": 1
+    },
+    {
+      "name": "accepted task fails; MySQL rolls back but Redis stays reserved",
+      "status": "OBSERVED",
+      "voucher_id": 1,
+      "user_id": 1,
+      "accepted_response": {
+        "success": true,
+        "data": "1432032290799617"
+      },
+      "injected_failure_marker": "async_verification_insert_rejected",
+      "consumer_log": "app-1.log",
+      "consumer_log_line": 50,
+      "state": {
+        "mysql_stock": 3,
+        "mysql_orders": 0,
+        "failed_user_orders": 0,
+        "redis_stock": 2,
+        "redis_recorded_users": 1,
+        "failed_user_recorded": true
+      }
+    },
+    {
+      "name": "original accepted order is retried automatically and reaches MySQL exactly once",
+      "status": "OBSERVED",
+      "order_id": "1432032290799617",
+      "state": {
+        "mysql_stock": 2,
+        "mysql_orders": 1,
+        "failed_user_orders": 1,
+        "redis_stock": 2,
+        "redis_recorded_users": 1,
+        "failed_user_recorded": true
+      }
+    },
+    {
+      "name": "another JVM rejects duplicate purchase after recovery",
+      "status": "OBSERVED",
+      "response": {
+        "success": false,
+        "errorMsg": "买过了"
+      },
+      "state": {
+        "mysql_stock": 2,
+        "mysql_orders": 1,
+        "failed_user_orders": 1,
+        "redis_stock": 2,
+        "redis_recorded_users": 1,
+        "failed_user_recorded": true
+      }
+    },
+    {
+      "name": "consumer continues healthy orders without another deduction for the recovered task",
+      "status": "OBSERVED",
+      "healthy_user_id": 2,
+      "healthy_order_id": "1432040880734211",
+      "state": {
+        "mysql_stock": 1,
+        "mysql_orders": 2,
+        "failed_user_orders": 1,
+        "redis_stock": 1,
+        "redis_recorded_users": 2,
+        "failed_user_recorded": true
+      }
+    },
+    {
+      "name": "HTTP creation initializes Redis after database save",
+      "voucher_id": 2,
+      "initial_stock": 2,
+      "remaining_stock": 2,
+      "orders": 0,
+      "duplicate_groups": 0,
+      "status": "PASS",
+      "redis_stock": 2,
+      "redis_recorded_users": 0,
+      "server": 2
+    },
+    {
+      "name": "persistent failure stops after three attempts and retains the exact task for review",
+      "status": "OBSERVED",
+      "voucher_id": 2,
+      "failure_record": {
+        "orderId": 1432040880734212,
+        "userId": 3,
+        "voucherId": 2,
+        "attempts": 3,
+        "status": "MANUAL_REVIEW",
+        "reason": "org.springframework.jdbc.UncategorizedSQLException: \r\n### Error updating database.  Cause: java.sql.SQLException: async_verification_persistent_reject\r\n### The error may exist in com/hmdp/mapper/VoucherOrderMapper.java (best guess)\r\n### The error may involve com.hmdp.mapper.VoucherOrderMapper.insert-Inline\r\n### The error occurred while setting parameters\r\n### SQL: INSERT INTO tb_voucher_order  ( id, user_id, voucher_id )  VALUES  ( ?, ?, ? )\r\n### Cause: java.sql.SQLException: async_verification_persistent_reject\n; uncategorized SQLException; SQL state [45000]; error code [1644]; async_verification_persistent_reject; nested exception is java.sql.SQLException: async_verification_persistent_reject",
+        "updatedAt": 1792373825785
+      },
+      "state": {
+        "mysql_stock": 2,
+        "mysql_orders": 0,
+        "failed_user_orders": 0,
+        "redis_stock": 1,
+        "redis_recorded_users": 1,
+        "failed_user_recorded": true
+      }
+    }
+  ],
+  "final_state": {
+    "mysql_stock": 1,
+    "mysql_orders": 2,
+    "failed_user_orders": 1,
+    "redis_stock": 1,
+    "redis_recorded_users": 2,
+    "failed_user_recorded": true
+  },
+  "development_before": {
+    "vouchers": 2,
+    "seckill_vouchers": 1,
+    "total_stock": 100,
+    "orders": 0,
+    "users": 1012
+  },
+  "development_after": {
+    "vouchers": 2,
+    "seckill_vouchers": 1,
+    "total_stock": 100,
+    "orders": 0,
+    "users": 1012
+  },
+  "app_pids": [
+    13428,
+    27104
+  ],
+  "app_ports": [
+    51141,
+    51142
+  ],
+  "redis_port": 50956,
+  "injection_trigger_removed": true,
+  "conclusion": "Transient failure recovers with the original ID; persistent failure is retained for review."
+}

@@ -1,0 +1,190 @@
+{
+  "date": "2026-10-29",
+  "totals": {
+    "tests": 159,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 1,
+    "passed": 158
+  },
+  "suites": [
+    {
+      "name": "com.hmdp.BlogFeedControllerTest",
+      "tests": "3",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "time": "0.902"
+    },
+    {
+      "name": "com.hmdp.CacheClientTest",
+      "tests": "5",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "time": "1.046"
+    },
+    {
+      "name": "com.hmdp.consumer.SeckillOrderConsumerTest",
+      "tests": "5",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "time": "0.075"
+    },
+    {
+      "name": "com.hmdp.consumer.SeckillOrderRetryIntegrationTest",
+      "tests": "5",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "time": "13.387"
+    },
+    {
+      "name": "com.hmdp.HyperLogLogUvTest",
+      "tests": "4",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "time": "0.646"
+    },
+    {
+      "name": "com.hmdp.RabbitMqSendTest",
+      "tests": "1",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "1",
+      "time": "0"
+    },
+    {
+      "name": "com.hmdp.service.impl.BlogServiceFeedTest",
+      "tests": "10",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "time": "0.051"
+    },
+    {
+      "name": "com.hmdp.service.impl.BlogServiceLikesTest",
+      "tests": "6",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "time": "0.009"
+    },
+    {
+      "name": "com.hmdp.service.impl.BlogServicePublishTest",
+      "tests": "6",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "time": "0.057"
+    },
+    {
+      "name": "com.hmdp.service.impl.FollowCommonsTest",
+      "tests": "5",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "time": "0.025"
+    },
+    {
+      "name": "com.hmdp.service.impl.FollowServiceTest",
+      "tests": "9",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "time": "0.037"
+    },
+    {
+      "name": "com.hmdp.service.impl.SeckillOrderPublisherTest",
+      "tests": "10",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "time": "0.13"
+    },
+    {
+      "name": "com.hmdp.service.impl.SeckillQualificationServiceRedisTest",
+      "tests": "30",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "time": "0.468"
+    },
+    {
+      "name": "com.hmdp.service.impl.ShopGeoServiceTest",
+      "tests": "7",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "time": "0.282"
+    },
+    {
+      "name": "com.hmdp.service.impl.UserSignServiceTest",
+      "tests": "12",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "time": "0.246"
+    },
+    {
+      "name": "com.hmdp.service.impl.VoucherOrderAsyncServiceTest",
+      "tests": "8",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "time": "0.017"
+    },
+    {
+      "name": "com.hmdp.service.impl.VoucherOrderServiceTest",
+      "tests": "20",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "time": "0.034"
+    },
+    {
+      "name": "com.hmdp.service.impl.VoucherOrderTxServiceTest",
+      "tests": "3",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "time": "0.004"
+    },
+    {
+      "name": "com.hmdp.service.impl.VoucherServiceTransactionTest",
+      "tests": "10",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "time": "0.063"
+    }
+  ],
+  "broker_after": {
+    "seckill.order.queue": {
+      "messages_ready": 0,
+      "messages_unacknowledged": 0,
+      "consumers": 0,
+      "effective_policy_definition": {
+        "dead-letter-exchange": "seckill.order.dlx",
+        "dead-letter-routing-key": "seckill.order.failed"
+      }
+    },
+    "seckill.order.dlq": {
+      "messages_ready": 0,
+      "messages_unacknowledged": 0,
+      "consumers": 0,
+      "effective_policy_definition": {}
+    },
+    "test_queues": [],
+    "test_exchanges": []
+  },
+  "publisher_config": {
+    "publisher-confirm-type": "correlated",
+    "publisher-returns": true,
+    "template": {
+      "mandatory": true
+    }
+  }
+}

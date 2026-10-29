@@ -1,146 +1,201 @@
 package com.hmdp.utils;
 
-import cn.hutool.core.util.StrUtil;
-import cn.hutool.json.JSON;
-import cn.hutool.json.JSONObject;
+import cn.hutool.core.lang.UUID;
 import cn.hutool.json.JSONUtil;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Component;
 
+import javax.annotation.PreDestroy;
+import java.time.Clock;
 import java.time.LocalDateTime;
-import java.util.concurrent.Executor;
+import java.util.Collections;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
+/** 通用缓存工具：空值缓存、互斥重建、逻辑过期；数据库查询由调用方传入。 */
 @Component
-@Slf4j
-public class CacheClient {
-
-    @Autowired
-    private StringRedisTemplate stringRedisTemplate;
-
-    //方法1：将任意Java对象序列化为json并存储在string类型的key中，并且可以设置TTL过期时间
-    public void set(String key, Object value, Long time, TimeUnit timeUnit)
-    {
-        String jsonStr = JSONUtil.toJsonStr(value);//转化为json对象
-        stringRedisTemplate.opsForValue().set(key,jsonStr,time,timeUnit);
+public class CacheClient implements AutoCloseable {
+    private static final Logger log = LoggerFactory.getLogger(CacheClient.class);
+    private static final DefaultRedisScript<Long> UNLOCK = new DefaultRedisScript<>();
+    static {
+        UNLOCK.setLocation(new ClassPathResource("unlock.lua"));
+        UNLOCK.setResultType(Long.class);
     }
 
-    //方法2：将任意Java对象序列化为json并存储在string类型的key中，并且可以设置逻辑过期时间，用于处理缓存击穿问题
-    public void setWithLogicTime(String key,Object value,Long time,TimeUnit timeUnit)
-    {
-        RedisData redisData = new RedisData();
-        redisData.setData(value);
-        redisData.setExpireTime(LocalDateTime.now().plusSeconds(timeUnit.toSeconds(time)));
+    private final StringRedisTemplate redis;
+    private final Clock clock;
+    private final ExecutorService rebuilds = Executors.newFixedThreadPool(10);
 
-        stringRedisTemplate.opsForValue().set(key,JSONUtil.toJsonStr(redisData));
+    public CacheClient(StringRedisTemplate redis, Clock businessClock) {
+        this.redis = redis;
+        this.clock = businessClock;
     }
 
-    //方法3：根据指定的key查询缓存，并反序列化为指定类型，利用缓存空值的方式解决缓存穿透问题
+    public void set(String key, Object value, long time, TimeUnit unit) {
+        redis.opsForValue().set(key, value == null ? "" : JSONUtil.toJsonStr(value),
+                value == null ? RedisConstants.CACHE_NULL_TTL : time,
+                value == null ? TimeUnit.MINUTES : unit);
+    }
 
-    public <R,ID> R queryWithPassThrough(String keyPrefix, ID id, Class<R> type, Function<ID,R> dbFallback,
-                                         Long time , TimeUnit timeUnit)
-    {
-        //R返回值类型，即为查询返回的对象类型
-        //ID 查询值
-        //class<R> type 传入返回值类型
-        //数据库查询函数 dbFallback
-        //time 正常查询时的ttl
-        //timeUnit 时间单位
-        String key=keyPrefix+id;
-        String s = stringRedisTemplate.opsForValue().get(key);
-        if(StrUtil.isNotBlank(s)) //查询成功，直接反序列化后返回
-        {
-           return JSONUtil.toBean(s, type);
+    public void setWithLogicalExpire(String key, Object value, long time, TimeUnit unit) {
+        if (value == null) {
+            set(key, null, time, unit);
+            return;
         }
-        //判断是否为空值，若不是空值，则为“”空白缓存
-        if(s!=null)
-        {
+        RedisData data = new RedisData();
+        data.setData(value);
+        data.setExpireTime(LocalDateTime.now(clock).plusNanos(unit.toNanos(time)));
+        redis.opsForValue().set(key, JSONUtil.toJsonStr(data));
+    }
+
+    public <R, ID> R queryWithPassThrough(String prefix, ID id, Class<R> type,
+                                         Function<ID, R> database, long time, TimeUnit unit) {
+        String key = prefix + id;
+        String cached = redis.opsForValue().get(key);
+        if (cached != null) {
+            return cached.isEmpty() ? null : JSONUtil.toBean(cached, type);
+        }
+        R value = database.apply(id);
+        set(key, value, time, unit);
+        return value;
+    }
+
+    public <R, ID> R queryWithMutex(String prefix, ID id, Class<R> type, String lockPrefix,
+                                    Function<ID, R> database, long time, TimeUnit unit) {
+        return queryOnMiss(prefix + id, lockPrefix + id, id, type, database, time, unit, false);
+    }
+
+    public <R, ID> R queryWithLogicalExpire(String prefix, ID id, Class<R> type, String lockPrefix,
+                                            Function<ID, R> database, long time, TimeUnit unit) {
+        String key = prefix + id;
+        String lockKey = lockPrefix + id;
+        String cached = redis.opsForValue().get(key);
+        if (cached == null) {
+            return queryOnMiss(key, lockKey, id, type, database, time, unit, true);
+        }
+        if (cached.isEmpty()) {
             return null;
         }
-        //若未查询成功，则查询数据库
-        R r = dbFallback.apply(id);
-        if(r==null)//未命中，缓存空值
-        {
-            stringRedisTemplate.opsForValue().set(key,"",RedisConstants.CACHE_NULL_TTL,TimeUnit.MINUTES);
-            return null;
-        }
-        //命中，写入缓存并返回
-        this.set(key,r,time,timeUnit);
-
-        return r;
-    }
-
-
-
-    //线程池
-    private  static final ExecutorService CACHE_REBUILD_EXECUTOR = Executors.newFixedThreadPool(10);
-
-    //互斥锁
-    public boolean trylock(String key)
-    {
-        Boolean flag = stringRedisTemplate.opsForValue().setIfAbsent(key, "1",10,TimeUnit.SECONDS);
-        return Boolean.TRUE.equals(flag);
-    }
-    public void unlock(String key)
-    {
-        stringRedisTemplate.delete(key);
-    }
-
-
-
-    //方法4：根据指定的key查询缓存，并反序列化为指定类型，需要利用逻辑过期解决缓存击穿问题
-    public <R,ID> R queryWithLogicExpire(String keyPrefix,ID id,Class<R> type,Function<ID,R> dbFallback,
-                                       Long time,TimeUnit timeUnit)
-    {
-        //1. 如果未逻辑过期，直接返回数据
-        String key=keyPrefix+id;
-        String s = stringRedisTemplate.opsForValue().get(key);
-        if(StrUtil.isBlank(s))//如果为空
-        {
-            return null;
-        }
-        RedisData bean = JSONUtil.toBean(s, RedisData.class);
-        LocalDateTime expireTime = bean.getExpireTime();
-        R r = JSONUtil.toBean((JSONObject) bean.getData(), type);
-        if(LocalDateTime.now().isAfter(expireTime))//未过期，直接返回
-        {
-
-            return r;
+        RedisData data = JSONUtil.toBean(cached, RedisData.class);
+        R oldValue = fromData(data, type);
+        if (data.getExpireTime().isAfter(LocalDateTime.now(clock))) {
+            return oldValue;
         }
 
-        //2. 如果已逻辑过期，也先返回旧数据
-
-
-        //3. 同时尝试获取互斥锁
-
-        String lockKey=RedisConstants.LOCK_SHOP_KEY+id;
-
-        boolean isLock=trylock(lockKey);
-        //4. 获取锁成功的线程，异步重建缓存
-
-        if (isLock) {
-            CACHE_REBUILD_EXECUTOR.submit(() -> {
+        String token = UUID.randomUUID().toString(true);
+        if (!tryLock(lockKey, token)) {
+            return oldValue;
+        }
+        boolean submitted = false;
+        try {
+            // 持锁后再次读取：其他请求可能已刷新或者删除缓存。
+            cached = redis.opsForValue().get(key);
+            if (cached == null) {
+                return load(key, id, database, time, unit, true);
+            }
+            if (cached.isEmpty()) {
+                return null;
+            }
+            data = JSONUtil.toBean(cached, RedisData.class);
+            R current = fromData(data, type);
+            if (data.getExpireTime().isAfter(LocalDateTime.now(clock))) {
+                return current;
+            }
+            rebuilds.submit(() -> {
                 try {
-                    // 查询数据库
-                    R newData = dbFallback.apply(id);
-
-                    // 重建缓存
-                    this.setWithLogicTime(key, newData, time, timeUnit);
-                } catch (Exception e) {
-                    throw new RuntimeException(e);
+                    load(key, id, database, time, unit, true);
+                } catch (Exception failure) {
+                    log.error("异步缓存重建失败，key：{}", key, failure);
                 } finally {
-                    unlock(lockKey);
+                    unlock(lockKey, token);
                 }
             });
+            submitted = true;
+            return current;
+        } finally {
+            if (!submitted) {
+                unlock(lockKey, token);
+            }
         }
-        //5. 其他线程直接返回旧数据
-
-        return r;
     }
 
+    private <R, ID> R queryOnMiss(String key, String lockKey, ID id, Class<R> type,
+                                  Function<ID, R> database, long time, TimeUnit unit, boolean logical) {
+        String token = UUID.randomUUID().toString(true);
+        for (int attempt = 0; attempt < 50; attempt++) {
+            String cached = redis.opsForValue().get(key);
+            if (cached != null) {
+                if (cached.isEmpty()) {
+                    return null;
+                }
+                return logical ? fromData(JSONUtil.toBean(cached, RedisData.class), type)
+                        : JSONUtil.toBean(cached, type);
+            }
+            if (tryLock(lockKey, token)) {
+                try {
+                    cached = redis.opsForValue().get(key);
+                    if (cached != null) {
+                        if (cached.isEmpty()) {
+                            return null;
+                        }
+                        return logical ? fromData(JSONUtil.toBean(cached, RedisData.class), type)
+                                : JSONUtil.toBean(cached, type);
+                    }
+                    return load(key, id, database, time, unit, logical);
+                } finally {
+                    unlock(lockKey, token);
+                }
+            }
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("等待缓存重建时被中断", interrupted);
+            }
+        }
+        throw new IllegalStateException("缓存重建超时：" + key);
+    }
+
+    private <R, ID> R load(String key, ID id, Function<ID, R> database,
+                            long time, TimeUnit unit, boolean logical) {
+        R value = database.apply(id);
+        if (logical) {
+            setWithLogicalExpire(key, value, time, unit);
+        } else {
+            set(key, value, time, unit);
+        }
+        return value;
+    }
+
+    private <R> R fromData(RedisData data, Class<R> type) {
+        return JSONUtil.toBean(JSONUtil.toJsonStr(data.getData()), type);
+    }
+
+    public boolean tryLock(String key, String token) {
+        return Boolean.TRUE.equals(redis.opsForValue().setIfAbsent(
+                key, token, RedisConstants.LOCK_SHOP_TTL, TimeUnit.SECONDS));
+    }
+
+    public void unlock(String key, String token) {
+        redis.execute(UNLOCK, Collections.singletonList(key), token);
+    }
+
+    @PreDestroy
+    @Override
+    public void close() {
+        rebuilds.shutdownNow();
+        try {
+            if (!rebuilds.awaitTermination(5, TimeUnit.SECONDS)) {
+                log.warn("缓存重建线程池未在关闭等待时间内结束");
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        }
+    }
 }

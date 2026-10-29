@@ -1,205 +1,239 @@
-下面这张表很重要，建议你记住。
+# 邻享生活 · 本地优惠与探店社区
 
-功能	    Redis数据类型	Spring 操作
-短信验证码	String	opsForValue()
-登录 Token	Hash	opsForHash()
-商户缓存	    String	opsForValue()
-缓存空值	    String	opsForValue()
-分布式锁	    String	setIfAbsent()
-秒杀库存	    String	opsForValue() / Lua
-一人一单判断	Set	opsForSet()
-点赞	    Set / ZSet	opsForSet() / opsForZSet()
-点赞排行榜	ZSet	opsForZSet()
-关注/共同关注	Set	opsForSet()
-Feed 流	    ZSet	opsForZSet()
-附近商户	    GEO	opsForGeo()
-签到	    Bitmap	opsForValue().setBit()
-UV 统计	    HyperLogLog	opsForHyperLogLog()
+基于黑马点评课程项目重学实现的 Java 后端练习，围绕商户发现、优惠券抢购和探店内容分发，实践 Redis 缓存、并发控制与 RabbitMQ 异步下单。
 
----
+当前版本将秒杀提交从进程内阻塞队列切换到 RabbitMQ，补充了发布确认、无路由退回、消费幂等、有限重试及死信保留。项目保留原课程包名 `com.hmdp` 和数据库表结构，便于对照学习。
 
-## Bug 复盘：登录连环崩——`new LoginInterceptor()` 引发的 Spring IoC 失效
+## 功能与实现
 
-### 故障现象
+| 模块 | 实现内容 |
+| --- | --- |
+| 登录与身份 | 手机验证码登录；Redis Hash 保存 Token；双拦截器刷新有效期、校验身份；ThreadLocal 传递和清理用户信息 |
+| 商户缓存 | 通用 CacheClient；空值缓存、互斥重建、逻辑过期；商户详情缓存与更新失效 |
+| 优惠券秒杀 | Lua 原子校验并预扣库存和购买资格；Redisson 锁；MySQL 条件扣库存和用户/优惠券唯一索引 |
+| 异步下单 | RabbitMQ JSON 消息；持久化声明及消息；关联发布确认、mandatory 退回检测；不确定结果保留待核对记录 |
+| 消费恢复 | 沿用原订单号幂等落库；独立事务服务；总共最多处理 3 次；耗尽后转入死信队列 |
+| 探店与关注 | 笔记发布、详情、点赞、点赞用户列表；Set 关注关系与共同关注；ZSet 粉丝收件箱 |
+| 动态分页 | 时间戳和 offset 双游标滚动分页，覆盖同分值跨页及已删除动态的游标推进 |
+| 附近商户 | Redis GEO 距离排序与分页；按类型维护索引；商户变更时失效 |
+| 用户签到 | Bitmap 按月记录签到，统计当前月份截至当天的连续签到天数 |
+| UV 实验 | HyperLogLog 去重与百万数据量学习测试，尚未接入真实访问埋点 |
 
-1. 发送验证码 → Redis 查不到
-2. 登录 → 提示"服务器异常"
-3. 登录后点个人主页 → 又被踢回登录页
+## 秒杀请求如何执行
 
-### 根因：一句话
-
-**在 `MvcConfig` 中用 `new LoginInterceptor()` 手动创建拦截器，绕过了 Spring IoC 容器，导致拦截器内 `@Autowired stringRedisTemplate` 始终为 `null`，运行时抛 NullPointerException。**
-
-### 因果链
-
-```
-MvcConfig 中 new LoginInterceptor()
-    → Spring 不参与实例化，@Autowired 全部失效
-    → stringRedisTemplate = null
-    → preHandle() 中调用 opsForHash() 触发 NPE
-    → 全局异常处理器返回 "服务器异常"
-    → 前端收到失败响应，跳回登录页
+```mermaid
+flowchart TD
+    A[秒杀接口] --> B[校验活动时间并获取用户与优惠券锁]
+    B --> C[Lua 原子校验库存与购买资格]
+    C --> D[Redis 预扣并保存发送待核对记录]
+    D --> E[发布 RabbitMQ JSON 订单消息]
+    E --> F{发送结果}
+    F -->|ACK 且未退回| G[返回原订单号：已受理]
+    F -->|明确未发送或无路由退回| H[恢复 Redis 预扣]
+    F -->|超时、断连或 NACK| I[保留预扣及待核对记录]
+    E --> J[订单队列]
+    J --> K[消费者调用事务服务]
+    K --> L{处理结果}
+    L -->|成功| M[数据库扣库存并保存订单后确认消息]
+    L -->|失败| N[总共最多尝试 3 次]
+    N -->|重试耗尽| O[死信队列保留消息]
 ```
 
-同时 `/user/me` 被写在排除列表里，拦截器不执行 → `UserHolder.getUser()` 从 ThreadLocal 拿不到用户 → 前端认为未登录。这也是现象③的附加原因。
+接口返回订单号表示消息已受理，数据库订单由消费者稍后创建。发送确认超时并不能证明消息没有到达，因此不会直接回补库存；消费者重投始终使用同一个订单号。
 
-验证码没进 Redis 则是 `application.yaml` 中 Redis 未启动或连接配置不对，`sendCode()` 方法本身代码无问题。
+`VoucherOrderAsyncService` 是保留的旧内存队列练习，已移除 `@Service`，不会随应用启动。当前入口使用 `SeckillOrderPublisher`。
 
-### 修复（MvcConfig.java）
+### RabbitMQ 拓扑
 
-| 改前 | 改后 | 原因 |
-|------|------|------|
-| `new LoginInterceptor()` | `@Autowired LoginInterceptor` + 注入使用 | 让 Spring 管理实例，依赖注入才能生效 |
-| 排除列表含 `/user/me` | 移除 | `/me` 依赖拦截器填充 ThreadLocal |
-| 未声明 `addPathPatterns` | 加 `addPathPatterns("/**")` | 显式声明范围 |
+| 资源 | 名称 / 路由键 |
+| --- | --- |
+| 业务 Direct 交换机 | `seckill.order.exchange` |
+| 业务队列 | `seckill.order.queue` |
+| 业务绑定路由键 | `seckill.order` |
+| 死信 Direct 交换机 | `seckill.order.dlx` |
+| 死信队列 | `seckill.order.dlq` |
+| 死信绑定路由键 | `seckill.order.failed` |
 
-### 面试话术要点
+Bean 会声明交换机、队列和绑定；业务队列通过 **RabbitMQ policy** 连接死信交换机。启动应用声明队列后，在管理后台为应用使用的虚拟主机创建以下策略：
 
-**Q: 为什么 `@Component` 标记了，`new` 出来还是拿不到注入？**
-Spring 只能管理自己创建的 Bean。`new` 是 JVM 层面的对象创建，完全绕过容器，`@Autowired`、`@Value`、AOP 代理全部失效。
+| 配置项 | 值 |
+| --- | --- |
+| Name | `seckill-order-dlx-policy` |
+| Pattern | `^seckill\.order\.queue$` |
+| Apply to | `Queues` |
+| Priority | `10` |
+| Definition：`dead-letter-exchange` | `seckill.order.dlx`（String） |
+| Definition：`dead-letter-routing-key` | `seckill.order.failed`（String） |
 
-**Q: 怎么预防？**
-- 注册拦截器/过滤器只用 `@Autowired` 注入，不用 `new`
-- 单测 Mock 依赖可提前暴露 NPE
-- Code Review 看到 `new XxxInterceptor()` 直接打回
+消费者使用 Spring `AUTO` 确认，失败总尝试次数为 3，重试间隔约为 1 秒、2 秒；耗尽后拒绝且不重新入队。**必须配置上述死信策略**，否则被拒绝消息不会进入项目死信队列。
 
-**Q: ThreadLocal 在这个项目里干什么？为什么不用 Session？**
-Token + Redis + ThreadLocal 的方案天然无状态，支持水平扩展；Session 方案在集群下需要额外处理 Session 共享。ThreadLocal 用完必须在 `afterCompletion` 里 `remove()`，否则有内存泄漏风险。
+## 技术栈与本地验证环境
 
----历时多轮深入探讨，我们从“请求怎么进来的”一路追到了“数据怎么落库的”，覆盖了黑马点评项目（及Java Web开发）的**核心骨架**。
+| 组件 | 当前版本 / 说明 |
+| --- | --- |
+| Java | 本地使用 JDK 17 验证，Maven 源码目标为 Java 8 |
+| Spring Boot | `2.3.12.RELEASE` |
+| MyBatis-Plus | `3.4.3` |
+| MySQL | 本地 MySQL 8；项目沿用 Connector/J `5.1.47` |
+| Redis | 本地验证 `3.2.100`；当前功能不依赖 Redis Stream |
+| Redisson | `3.13.6` |
+| RabbitMQ | 本地 Docker `rabbitmq:4-management`；AMQP 端口 `5672`，管理端口 `15672` |
+| Spring AMQP | 由 Spring Boot 管理，为 `2.2.18.RELEASE` |
+| 测试 | JUnit 5、Mockito、独立 Redis 进程、独立 RabbitMQ 测试队列 |
 
-为了方便你复盘，我把所有知识点按照 **“请求链路”** 和 **“核心工具”** 两条主线，梳理成了一份结构化的“知识地图”。你可以把它当作查漏补缺的目录。
+## 本地启动
 
----
+### 1. 准备环境
 
-### 🗺️ 一、核心架构与请求链路（贯穿始终的主线）
+安装 JDK、Maven、MySQL，并启动 Redis 和 RabbitMQ。源码只包含后端；完整网页、Nginx 和图片资源需要自行准备。默认应用端口为 `8081`。
 
-这组知识点串联了从 **APP 点击** 到 **后端响应** 的完整血脉，是理解项目的基石。
-
-1.  **登录校验全流程（核心主线）**：
-    - **登录（发证）**：`/user/login` 被拦截器**放行**，校验验证码后生成 **Token（UUID）**，
-    - 将用户信息存入 **Redis**（Key: `login:token:xxx`），返回 Token 给前端。
-    - **后续请求（验票）**：前端每次请求在 **Header（请求头）** 中携带 Token。
-    - 后端通过 `request.getHeader("authorization")` 获取。
-    - **双拦截器链**（执行顺序严格区分）：
-        - **RefreshTokenInterceptor（order=0）**：拦截所有请求，根据 Token 查 Redis，
-        - 查到则**存入 ThreadLocal** + **续期（expire）**，无论是否查到都放行。
-        - **LoginInterceptor（order=1）**：只拦截业务接口（如 `/order/**`），
-        - 检查 ThreadLocal 是否有用户，没有则拦截返回 401。
-    - **善后清理**：请求结束后，在 `afterCompletion` 中**必须 `ThreadLocal.remove()`**，防止内存泄漏。
-
-2.  **核心组件职责与写法**：
-    - **拦截器（Interceptor）**：实现 `HandlerInterceptor`，重写 `preHandle`（业务逻辑）、`afterCompletion`（清理）。**必须加 `@Component`** 交给 Spring 管理（否则 `@Autowired` 注入为 null）。
-    - **配置类（`MvcConfig`）**：实现 `WebMvcConfigurer`，重写 `addInterceptors`，利用 **注册器（`InterceptorRegistry`）** 将拦截器注册进去，并配置 `addPathPatterns`（拦截）和 `excludePathPatterns`（放行）。
-    - **ThreadLocal（线程局部变量）**：`UserHolder` 封装，用于在**同一请求线程**中透传用户信息，避免层层传参。**特性**：不同线程数据隔离。
-    - **Session（会话）**：`request.getSession()` 基于 Cookie 中的 `JSESSIONID` 查找服务器内存 Map。**缺点**：分布式下无法共享，所以黑马点评用 Redis 替代。
-
----
-
-### 🗄️ 二、数据存储与操作（DAO 层与缓存层）
-
-这组知识点解决了“数据从哪取、怎么存”的问题。
-
-1.  **MyBatis-Plus（数据库操作）**：
-    - 实体类与数据库表映射。
-    - **`QueryWrapper` 与 `LambdaQueryWrapper`**：构建 SQL 查询条件。**前者**字段名用**字符串**（`eq("name", "张")`），**后者**用**Lambda 表达式**（`eq(User::getName, "张")`），推荐后者（编译期检查）。
-    - **`#{}` vs `${}`**：`#{}` 预编译防 SQL 注入（绝大多数场景），`${}` 字符串拼接（仅用于动态表名/列名）。
-2.  **Redis 与工具集成**：
-    - 用 **Hash** 结构存储用户信息（`StringRedisTemplate.opsForHash().putAll(key, map)`）。
-    - **`BeanUtil.beanToMap()`**（Hutool）：将对象转为 Map，**配合 Redis 存储**。
-        - **致命陷阱**：`setFieldValueEditor` 执行**优先级高于** `setIgnoreNullValue`。若值为 null 直接 `toString()` 会空指针，必须判空：`fieldValue != null ? fieldValue.toString() : null`。
-
----
-
-### 🛠️ 三、Java 基础工具与规范（夯实内功）
-
-这组知识点是日常增删改查的“锅碗瓢盆”。
-
-1.  **集合框架（List/Set/Map）**：
-    - **List（`ArrayList`）**：有序可重复，`get(i)`、`add(e)`、`isEmpty()`。
-    - **Set（`HashSet`）**：无序不可重复，`contains(o)` 判重。
-    - **Map（`HashMap`）**：键值对，`put(k,v)`、`get(k)`、`containsKey(k)`。
-2.  **对象转换工具（BeanUtil vs BeanUtils）**：
-    - **Apache/Spring `BeanUtils`**：专注**属性拷贝**（`copyProperties`）。
-    - **Hutool `BeanUtil`**：**全能型**，支持 `beanToMap`、`mapToBean` 等。
-    - **`BeanUtil.copyProperties(user, UserDTO.class)`**：创建新目标对象，拷贝同名属性。**用途**：隐藏密码等敏感字段（数据脱敏）。
-3.  **常用注解与依赖注入**：
-    - **`@Resource`（Java 标准）**：默认**按名称（byName）**注入，找不到再按类型。
-    - **`@Autowired`（Spring）**：默认**按类型（byType）**注入，配合 `@Qualifier` 按名称。
-    - **Lombok `@Slf4j`**：生成日志对象，支持 `log.debug("{}", param)` 占位符；误用 `@CommonsLog` 会导致参数个数报错。
-4.  **代码规范**：
-    - **魔法值**：硬编码的数字/字符串（如 `6`、`"login:code:"`）。必须抽取为 `public static final` 常量或枚举。
-
----
-
-### ⚠️ 四、避坑指南（高亮重点）
-
-这些都是你在复现项目时极大概率会遇到的问题，单独拎出来提醒自己：
-
-1.  **拦截器注入失效**：拦截器类**必须加 `@Component`**，配置类中用 `@Autowired` 注入。**绝不能用 `new`**。
-2.  **双拦截器执行顺序**：`RefreshTokenInterceptor` 必须 `order(0)` 最先执行，`LoginInterceptor` 必须 `order(1)` 后执行，否则 ThreadLocal 为空导致全部拦截。
-3.  **BeanUtil 空指针陷阱**：`beanToMap` 中 `setFieldValueEditor` 先执行，要**显式判空**（`null` 返回 `null`），才能让 `setIgnoreNullValue` 生效。
-4.  **Token 获取不到**：确认前端是否把 Token 放在 **Header** 的 `Authorization` 中。`getHeader("authorization")` 大小写不敏感。
-5.  **登录接口被拦截**：检查 `excludePathPatterns` 是否添加了 `/user/login` 和 `/user/code`。
-
----
-
-### 📌 复盘建议
-
-你可以按照 **“请求来了 -> 拦截器(1) -> 拦截器(2) -> Controller -> Service -> Mapper(MyBatis-Plus) -> Redis/MySQL -> 响应返回 -> 清理”** 这条时间线，闭上眼睛把每个节点的代码逻辑默念一遍。
-
-如果在默念过程中发现某个节点（比如“拦截器到底怎么注册到 Spring 的”）卡住了，直接回看对应的那一段对话就行。你现在对整个链路的理解已经超过 80% 的初学者了，加油！🚀
-
-*复盘时间：2026-07-03*
-
----
-
-## Bug 复盘：店铺类型缓存三连击——filter 写反 + 空值误判 + 返回类型错误
-
-### 故障现象
-
-调用 `/shop-type/list` 接口，首次请求返回空数组 `[]`，后续请求永远返回空数组，数据库明明有数据但始终不生效。
-
-### 根因：一句话
-
-**三个独立 Bug 叠加形成死锁：filter 谓词反转导致数据被过滤，`!= null` 误判导致首次查 Redis 返回空列表后永远不穿透到数据库，最后还把 JSON 字符串当成对象返回给前端。**
-
-### 因果链
-
-```
-首次请求 → Redis 无缓存 → range() 返回空列表 []
-    → stream.filter(StrUtil::isBlank) 保留空白、丢弃非空白 → typeList = []
-    → typeList != null 为 true（空列表 ≠ null）
-    → 直接返回 Result.ok([]) ← 永远走不到数据库查询
+```bash
+git clone https://github.com/cs-sdran/hm-dianping.git
+cd hm-dianping
 ```
 
-即使侥幸走到写缓存分支：
+### 2. 初始化数据库
+
+在 MySQL 客户端中，新建一个供本项目使用的空数据库，再导入课程样例数据：
+
+```sql
+CREATE DATABASE hmdp CHARACTER SET utf8mb4;
+USE hmdp;
+SOURCE src/main/resources/db/hmdp.sql;
 ```
-数据库查询 sort = [实体1, 实体2, ...]
-    → stream.filter(BeanUtil::isEmpty) 保留空对象、丢弃正常对象 → collect ≈ []
-    → leftPushAll 推入空列表（且顺序反转）
-    → return Result.ok(collect) ← 返回的是 List<String>（JSON 串），而非 List<ShopType>
+
+`hmdp.sql` 含 `DROP TABLE`，只用于空库初始化。更新已有数据库时执行增量脚本，不要重新导入全量 SQL：
+
+```sql
+USE hmdp;
+SOURCE src/main/resources/db/migration/20261016_voucher_order_unique.sql;
+SOURCE src/main/resources/db/migration/20261020_follow_unique.sql;
 ```
 
-### 修复（ShopTypeServiceImpl.java）
+脚本会检查重复数据并在异常时停止，不会自动删除重复订单或关注关系。新库也可执行上述增量脚本核对索引。
 
-| 位置 | 改前 | 改后 | 原因 |
-|------|------|------|------|
-| filter 谓词（读缓存） | `StrUtil::isBlank` | `StrUtil::isNotBlank` | `isBlank` 保留空白→丢弃有效 JSON，语义反了 |
-| 命中判断 | `if (typeList != null)` | `if (list != null && !list.isEmpty())` | Redis 空结果返回空列表非 null，null 检查永远为 true |
-| filter 谓词（写缓存） | `BeanUtil::isEmpty` | `bean -> !BeanUtil.isEmpty(bean)` | 同上，保留空对象而丢弃正常实体 |
-| 写入顺序 | `leftPushAll` | `rightPushAll` | leftPush 会反转 sort 排序，rightPush 保持原序 |
-| 返回值 | `Result.ok(collect)` | `Result.ok(sort)` | collect 是 `List<String>`（JSON 字符串），sort 是 `List<ShopType>` |
+### 3. 配置连接
 
-### 面试话术要点
+将示例复制为本地配置文件（PowerShell）：
 
-**Q: `filter` 的谓词返回 true 是保留还是丢弃？**
-Stream 的 `filter` 保留返回 `true` 的元素。`StrUtil.isBlank("")` 对空字符串返回 `true`，所以 `filter(StrUtil::isBlank)` 实际保留了空字符串、丢弃了有效数据——恰好与意图相反。
+```powershell
+Copy-Item src/main/resources/application.example.yaml src/main/resources/application.yaml
+$env:DB_USERNAME = '你的数据库用户名'
+$env:DB_PASSWORD = '你的数据库密码'
+$env:RABBITMQ_USERNAME = '你的RabbitMQ用户名'
+$env:RABBITMQ_PASSWORD = '你的RabbitMQ密码'
+```
 
-**Q: 为什么 `range()` 返回空列表而不是 null？**
-Spring Data Redis 的 `opsForList().range()` 在 key 不存在时返回 `Collections.emptyList()`，这是框架约定。用 `!= null` 做缓存命中判断是无效的——空列表永远非 null。必须用 `isEmpty()`。
+示例支持 `DB_URL`、`REDIS_HOST`、`REDIS_PORT`、`REDIS_DATABASE`、`REDIS_PASSWORD`、`RABBITMQ_HOST`、`RABBITMQ_PORT`、`RABBITMQ_VHOST` 和 `SERVER_PORT` 等环境变量。Linux/macOS 可使用对应的 `cp` 和 `export` 命令。RabbitMQ 用户需具有目标虚拟主机的读写及配置权限。
 
-**Q: `leftPushAll` 和 `rightPushAll` 区别？**
-`leftPushAll` 将集合元素逐个从左侧推入，最终顺序与集合相反（先入的被挤到右边）；`rightPushAll` 保持与集合一致的顺序。缓存读写的顺序应保持一致，否则排序会乱。
+`application.yaml`、`.env`、日志和 `target/` 均不提交到仓库。保留示例中的发布确认、mandatory 和有限重试配置。
 
-*复盘时间：2026-07-04*
+### 4. 启动应用
+
+```bash
+mvn spring-boot:run
+```
+
+或打包后运行：
+
+```bash
+mvn -DskipTests package
+java -jar target/hm-dianping-0.0.1-SNAPSHOT.jar
+```
+
+首次启动后，按上文配置死信策略。图片上传路径目前仍位于 `SystemConstants.IMAGE_UPLOAD_DIR`，请根据本机前端/Nginx 图片目录调整。
+
+验证码当前写入应用日志，仅用于本地登录练习，未对接短信服务。登录成功后，将响应中的 Token 原样放入请求头 `authorization`，不需要添加 `Bearer` 前缀。
+
+新增秒杀券请使用 `POST /voucher/seckill`：数据库事务提交后会初始化 Redis 库存。直接插入数据库的优惠券不会自动获得 Redis 秒杀库存。
+
+## 常用接口
+
+以下路径均相对于 `http://localhost:8081`，省略了通用请求头及业务参数。
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| POST | `/user/code?phone=...` | 发送本地练习验证码 |
+| POST | `/user/login` | 手机号与验证码登录 |
+| GET | `/user/me` | 当前登录用户 |
+| GET | `/shop/{id}` | 商户详情 |
+| GET | `/shop/of/type?typeId=...&current=1&x=...&y=...` | 附近商户；x 为经度、y 为纬度 |
+| POST | `/voucher/seckill` | 创建秒杀券并在提交后初始化库存 |
+| POST | `/voucher-order/seckill/{id}` | 提交秒杀订单 |
+| POST | `/blog` | 发布探店笔记 |
+| PUT | `/blog/like/{id}` | 点赞或取消点赞 |
+| GET | `/blog/likes/{id}` | 点赞用户列表 |
+| PUT | `/follow/{id}/{isFollow}` | 关注或取消关注 |
+| GET | `/follow/common/{id}` | 共同关注 |
+| GET | `/blog/of/follow?lastId=...&offset=0` | 关注动态滚动分页，首次 lastId 可传当前毫秒时间戳 |
+| POST | `/user/sign` | 当天签到 |
+| GET | `/user/sign/count` | 当前月连续签到天数 |
+
+## 如何运行测试
+
+### 普通回归
+
+```bash
+mvn test
+```
+
+涉及 Redis 的测试会启动临时 Redis 进程，不使用开发 Redis 数据。需提供本机 `redis-server` 可执行文件；默认支持 PATH，Windows 开发环境还兼容原练习安装路径。可显式指定：
+
+```powershell
+mvn '-Dhmdp.test.redis.executable=C:/path/to/redis-server.exe' test
+```
+
+普通回归会跳过真实 RabbitMQ 联调及手动练习发送测试，不会向业务订单队列发送固定练习数据。
+
+### RabbitMQ 隔离联调
+
+在本地配置文件正确、RabbitMQ 可连接时执行：
+
+```powershell
+mvn '-Dhmdp.rabbitmq.retry-integration-test=true' test
+```
+
+联调使用随机命名的独立队列和交换机，结束后清理，不读取业务队列；资格服务、锁、ID 生成及数据库事务使用模拟对象。覆盖消息入队后异步处理、无路由退回后恢复预扣、有限重试及死信转移。
+
+2026-10-29 的全量测试结果：**159 项中 158 项通过，1 项手动发送练习按设计跳过，失败和错误均为 0**。这是本地功能回归结果，不是吞吐量或线上性能指标。
+
+`RabbitMqSendTest` 是会向业务队列发送固定订单的旧手动练习，不用于普通回归。`scripts/` 保留了此前各学习阶段的 HTTP 验收脚本，其中内存队列版秒杀脚本尚未迁移为 RabbitMQ 版，不能直接作为当前版秒杀验收依据。
+
+## 目录
+
+```text
+src/main/java/com/hmdp/
+  config/       Spring、Redis、RabbitMQ 与时钟配置
+  controller/   HTTP 接口
+  consumer/     RabbitMQ 订单消费者
+  service/impl/ 业务服务、资格服务、发布服务与事务落库
+  interceptor/  身份刷新与登录校验
+  utils/        缓存、ID、Redis Key 等工具
+src/main/resources/
+  application.example.yaml  无凭据的配置示例
+  db/                       初始化数据与增量 SQL
+  mapper/                   MyBatis XML
+  *.lua                     资格预扣、回补与解锁脚本
+src/test/java/              单元测试与隔离中间件联调
+docs/                       各阶段说明和测试记录
+scripts/                    历史 HTTP 验收脚本
+```
+
+## 当前边界与后续工作
+
+- RabbitMQ 已接入实际秒杀入口；真实 HTTP、Redis 预扣和 MySQL 落库的 RabbitMQ 版完整验收尚未完成。
+- `seckill:publish:pending` 保存投递结果不确定的订单；目前需要人工核对，尚无自动对账或补发任务。
+- Redis 资格预扣与发送记录写入不是一个原子操作，尚未实现跨 Redis、RabbitMQ、MySQL 的最终一致性恢复闭环。
+- 死信队列暂不自动消费；订单状态查询、失败通知与前端轮询仍待补充。
+- 签到连续天数限当前月份；HyperLogLog 只作为学习实验。
+
+## 学习记录与验证证据
+
+- [RabbitMQ 秒杀入口接入说明](docs/RabbitMQ秒杀入口接入说明-2026-10-29.md)
+- [RabbitMQ 重试与死信联调报告](docs/RabbitMQ重试与死信联调报告-2026-10-29.md)
+- [RabbitMQ 接入后的回归结果](docs/rabbitmq-entry-regression-2026-10-29.json)
+- [此前实战篇收尾验收记录](docs/实战篇收尾验收报告-2026-10-24.md)
+- [附近商户 GEO 功能说明](docs/附近商户GEO功能说明-2026-10-22.md)
+- [HyperLogLog UV 学习说明](docs/UV统计学习说明-2026-10-24.md)
+
+历史报告反映对应学习阶段的代码状态，以本 README 和最新 RabbitMQ 接入说明为当前行为基准。

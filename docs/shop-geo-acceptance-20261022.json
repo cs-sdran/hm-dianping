@@ -1,0 +1,38 @@
+{
+  "status": "PASS",
+  "database": "hmdp_geo_verify_20261022_171837_c176fd",
+  "app_port": 61161,
+  "development_counts_before": "14",
+  "development_counts_after": "14",
+  "cases": [
+    {
+      "name": "GEO automatic import, distance order, five-kilometer filter and pagination",
+      "status": "PASS"
+    },
+    {
+      "name": "GEO type isolation",
+      "status": "PASS"
+    },
+    {
+      "name": "Existing database pagination without coordinates",
+      "status": "PASS"
+    },
+    {
+      "name": "Invalid coordinates rejected",
+      "status": "PASS"
+    },
+    {
+      "name": "New shop invalidates and rebuilds the complete type index",
+      "status": "PASS",
+      "new_shop_id": 202
+    },
+    {
+      "name": "Shop type and coordinate update invalidates old and new indexes",
+      "status": "PASS"
+    },
+    {
+      "name": "Development shop row count unchanged",
+      "status": "PASS"
+    }
+  ]
+}

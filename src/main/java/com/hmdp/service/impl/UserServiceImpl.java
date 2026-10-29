@@ -14,14 +14,18 @@ import com.hmdp.service.IUserService;
 import com.hmdp.utils.RedisConstants;
 import com.hmdp.utils.RegexUtils;
 import com.hmdp.utils.SystemConstants;
+import com.hmdp.utils.UserHolder;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.BeanUtils;
-import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.connection.BitFieldSubCommands;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
-import javax.servlet.http.HttpSession;
+import javax.annotation.Resource;
+import java.time.Clock;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
@@ -37,76 +41,157 @@ import java.util.concurrent.TimeUnit;
 @Slf4j
 public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IUserService {
 
-    @Autowired
-    private StringRedisTemplate stringRedisTemplate;
+    @Resource
+    private  StringRedisTemplate stringRedisTemplate;
+
+    @Resource
+    private Clock businessClock;
     @Override
-    public Result sendCode(String phone, HttpSession session) {
-        // 1 验证手机号
-
-        if(RegexUtils.isPhoneInvalid(phone)) //手机号不符合
-        {
-            return Result.fail("手机号格式不正确");
-        }
-        // 2 生成验证码
-        String code= RandomUtil.randomNumbers(6);
-        // 3 保存验证码到redis,设置过期时间为2分钟
-        stringRedisTemplate.opsForValue().set(RedisConstants.LOGIN_CODE_KEY+phone,code,RedisConstants.LOGIN_CODE_TTL, TimeUnit.MINUTES);
-        //发送验证码
-
-        log.debug("验证码为:{}",code);
-
-        return  Result.ok();
-    }
-
-    //登录功能
-    public Result login(LoginFormDTO loginForm, HttpSession session) {
-        //1 校验手机号
-        String phone=loginForm.getPhone();
+    public Result sendCode(String phone) {
+        //判断手机号是否正确
         if(RegexUtils.isPhoneInvalid(phone))
         {
             return Result.fail("手机号格式错误");
         }
-        //2 校验验证码
-         //2.1取出验证码
-        String cacheCode = stringRedisTemplate.opsForValue().get(RedisConstants.LOGIN_CODE_KEY + phone);
-        String code=loginForm.getCode();
 
-        //3 不一致则登录失败，否则下一步
-        //比较验证码,验证码为空或者不相同则报错
-        if(cacheCode==null || !cacheCode.equals(code))
-        {
-            return  Result.fail("验证码错误");
-        }
-        //4 用户存在则直接登录
-
-         User user= query().eq("phone",phone).one();
-        //5 用户不存在则创建用户，并保存到数据库
-       if(user==null)
-       {
-           user=createWithPhone(phone);
-       }
-
-       // 6保存用户信息到redis中
-        String token = UUID.randomUUID().toString(true);
-        UserDTO userDTO = BeanUtil.copyProperties(user, UserDTO.class);
-        Map<String, Object> Map = BeanUtil.beanToMap(userDTO,new HashMap<>(), CopyOptions.create().setIgnoreNullValue(true)
-                .setFieldValueEditor((fieldName,fieldValue)->fieldValue.toString()));
-
-        String tokenKey=RedisConstants.LOGIN_USER_KEY+token;
-
-        stringRedisTemplate.opsForHash().putAll(tokenKey,Map);
-        stringRedisTemplate.expire(tokenKey,RedisConstants.LOGIN_USER_TTL,TimeUnit.MINUTES);
+        String s = RandomUtil.randomNumbers(6);//生成验证码
+        stringRedisTemplate.opsForValue().set
+                (RedisConstants.LOGIN_CODE_KEY+phone,s,RedisConstants.LOGIN_CODE_TTL,
+                        TimeUnit.MINUTES);//将验证码保存至redis,设置两分钟TTL
 
 
+        log.info("验证码为："+s);
 
-        return Result.ok(token);
+        return Result.ok();
     }
 
-    private User createWithPhone(String phone) {
+    @Override
+    public Result login(LoginFormDTO loginForm) {
+        //接收手机号
+        String phone = loginForm.getPhone();
+        //接受验证码
+        String code = loginForm.getCode();
+
+        //1.校验手机号格式
+        if(RegexUtils.isPhoneInvalid(phone))//手机号不合法
+        {
+            return Result.fail("手机号不合法");
+        }
+        //2.获取该手机号对应的验证码
+        String cachecode =
+                stringRedisTemplate.opsForValue().get(RedisConstants.LOGIN_CODE_KEY + phone);
+
+        //3.比较验证码
+        if(cachecode == null || !cachecode.equals(code))
+        {
+            return Result.fail("验证码错误");}
+
+        //4.验证码校验正确后根据手机号获得用户
+        User user = new User();
+        user=query().eq("phone",phone).one();
+        if(user==null)//创建用户
+        {
+           user=createnewuser(phone);
+        }
+
+        //5.将user转换为userdto,并将userdto转换为Map类型
+        UserDTO userDTO = new UserDTO();
+        BeanUtil.copyProperties(user,userDTO);
+        Map<String, Object> map = BeanUtil.beanToMap(userDTO, new HashMap<>(), CopyOptions.create().setIgnoreNullValue(true)
+                .setFieldValueEditor(
+                        (fieldName, fieldValue) -> fieldValue.toString()
+                ));
+
+        //6.生成随机UUID
+        String uuid=UUID.randomUUID().toString(true);
+        String tokenKey = RedisConstants.LOGIN_USER_KEY + uuid;
+
+       stringRedisTemplate.opsForHash().putAll(tokenKey,map);
+       stringRedisTemplate.expire(tokenKey,RedisConstants.LOGIN_USER_TTL,TimeUnit.MINUTES);
+
+        return Result.ok(uuid);
+    }
+
+    @Override
+    public Result logout(String token) {
+        stringRedisTemplate.delete(RedisConstants.LOGIN_USER_KEY + token);
+        return Result.ok();
+    }
+
+    @Override
+    public Result sign() {
+        //获取当前登录用户
+        UserDTO user = UserHolder.getUser();
+        if(user==null)
+            return Result.fail("请先登录");
+        Long userId = user.getId();
+        //获取当日日期
+        LocalDate now = LocalDate.now(businessClock);
+        String format = now.format(DateTimeFormatter.ofPattern(":yyyyMM:"));
+
+        String key=RedisConstants.USER_SIGN_KEY+userId.toString()+format;
+        //获取今日是本月第几天
+        int dayOfMonth = now.getDayOfMonth();
+        //在bitmap中的位置需要-1
+        stringRedisTemplate.opsForValue().setBit(key,dayOfMonth-1,true);
+
+        return Result.ok();
+    }
+
+
+
+    private User createnewuser(String phone)
+    {
         User user = new User();
         user.setPhone(phone);
-        user.setNickName(SystemConstants.USER_NICK_NAME_PREFIX+RandomUtil.randomString(10));
+
+        user.setNickName(SystemConstants.USER_NICK_NAME_PREFIX +RandomUtil.randomString(10));
+
         save(user);
+
         return user;
+    }
+
+    @Override
+    public Result signCount() {  //签到天数记录
+        //使用bitfield读取连续几位
+        //首先获取今日日期
+        //获取当前登录用户
+        UserDTO user = UserHolder.getUser();
+        if(user==null)
+            return Result.fail("请先登录");
+        Long userId = user.getId();
+        //获取当日日期
+        LocalDate now = LocalDate.now(businessClock);
+        String format = now.format(DateTimeFormatter.ofPattern(":yyyyMM:"));
+
+        String key=RedisConstants.USER_SIGN_KEY+userId.toString()+format;
+        int count = 0 ;
+        int dayOfMonth = now.getDayOfMonth();
+        List<Long> result = stringRedisTemplate.opsForValue().bitField(key,
+                BitFieldSubCommands.create().get(BitFieldSubCommands.BitFieldType.unsigned(dayOfMonth)).valueAt(0));
+
+        if(result==null||result.isEmpty())
+        {
+            return Result.ok(0);
+        }
+        //获取值
+        Long num = result.get(0);
+        if(num==null||num==0)
+            return Result.ok(0);
+
+        while(true)
+        {
+            //获取数字的最后一位
+            if((1&num)==1)
+            {
+                count++;
+                num>>>=1;
+            }
+            else {
+                break;
+            }
+        }
+        return Result.ok(count);
     }
 }
